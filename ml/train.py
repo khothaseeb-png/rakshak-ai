@@ -74,8 +74,8 @@ def train() -> None:
     x_train, x_test, y_train, y_test = split_by_run(dataframe)
 
     model = RandomForestClassifier(
-        n_estimators=100,
-        max_depth=10,
+        n_estimators=20,
+        max_depth=5,
         class_weight="balanced",
         random_state=42,
     )
