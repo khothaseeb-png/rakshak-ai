@@ -1,0 +1,13 @@
+numpy
+pandas
+scikit-learn
+xgboost
+flask
+flask-cors
+streamlit
+watchdog
+psutil
+pefile
+requests
+joblib
+cryptography
