@@ -1,77 +1,103 @@
-import time
+import argparse
 import os
-import math
+import sys
+import time
+
 import requests
-from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from honeypot import create_honeypots, is_honeypot, get_honeypot_entropy, HONEYPOT_DIR
-from containment import kill_process_by_path, isolate_file
+from watchdog.observers import Observer
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from ml.behavior_features import (
+    BehaviorState,
+    compute_features,
+    read_file_entropy,
+)
+from behavior_logger import log_features
+from containment import isolate_file
+from honeypot import HONEYPOT_DIR, create_honeypots, get_honeypot_entropy, is_honeypot
 
 WATCH_DIR = "./watch_target"
 ML_API = "http://localhost:5000/predict"
 ENTROPY_THRESHOLD = 6.5
 FILE_CHANGE_THRESHOLD = 5
 
+
 class RansomwareHandler(FileSystemEventHandler):
-    def __init__(self):
-        self.recent_changes = []
+    def __init__(self, log_label: int | None = None, run_id: str = ""):
+        self.state = BehaviorState()
         self.alert_sent = False
+        self.log_label = log_label
+        self.run_id = run_id
 
     def on_modified(self, event):
         if event.is_directory:
             return
-        self._process_event(event.src_path, 'modified')
+        self._process_event(event.src_path, "modified")
 
     def on_created(self, event):
         if event.is_directory:
             return
-        self._process_event(event.src_path, 'created')
+        self._process_event(event.src_path, "created")
 
     def on_moved(self, event):
         if event.is_directory:
             return
         if event.dest_path:
-            self._process_event(event.dest_path, 'renamed')
+            self._process_event(event.dest_path, "renamed")
 
     def _process_event(self, filepath, event_type):
         now = time.time()
-        self.recent_changes = [t for t in self.recent_changes if now - t < 10]
-        self.recent_changes.append(now)
+        honeypot = is_honeypot(filepath)
+        entropy, byte_count = read_file_entropy(filepath)
 
-        if is_honeypot(filepath):
-            entropy = get_honeypot_entropy(filepath)
+        self.state.add_event(
+            filepath=filepath,
+            event_type=event_type,
+            entropy=entropy,
+            bytes_read=byte_count,
+            is_honeypot=honeypot,
+            timestamp=now,
+        )
+        features = compute_features(self.state, entropy, honeypot, now=now)
+
+        if self.log_label is not None:
+            log_features(
+                features,
+                label=self.log_label,
+                filepath=filepath,
+                run_id=self.run_id,
+            )
+
+        if honeypot:
             print(f"[ALERT] HONEYPOT TOUCHED: {filepath} | Entropy: {entropy:.2f}")
             if entropy > ENTROPY_THRESHOLD:
                 self._trigger_alert(filepath, "HONEYPOT_ENCRYPTION", 1.0)
                 return
 
-        if len(self.recent_changes) > FILE_CHANGE_THRESHOLD:
+        recent_event_count = len(self.state.snapshot(now))
+        if recent_event_count > FILE_CHANGE_THRESHOLD:
             self._trigger_alert(filepath, "MASS_FILE_MODIFICATION", 0.85)
+            return
 
-        try:
-            with open(filepath, 'rb') as f:
-                data = f.read(8192)
-            if data:
-                entropy = shannon_entropy(data)
-                if entropy > ENTROPY_THRESHOLD:
-                    print(f"[SUSPICIOUS] High entropy ({entropy:.2f}): {filepath}")
-                    self._check_with_ml(filepath, entropy)
-        except Exception:
-            pass
+        if entropy > ENTROPY_THRESHOLD:
+            print(f"[SUSPICIOUS] High entropy ({entropy:.2f}): {filepath}")
+            self._check_with_ml(filepath, features, entropy)
 
-    def _check_with_ml(self, filepath, entropy):
-        features = [
-            entropy / 8.0,
-            min(len(self.recent_changes)/10, 1.0),
-            0.5, 0.3, 0.2, 0.1, 0.8, 0.4, 0.6, 0.7
-        ]
+    def _check_with_ml(self, filepath, features, entropy):
         try:
-            resp = requests.post(ML_API, json={'features': features}, timeout=0.5)
-            result = resp.json()
-            if result['is_ransomware']:
-                self._trigger_alert(filepath, f"ML_DETECTION_{result['confidence']}",
-                                    result['ransomware_probability'])
-        except:
+            response = requests.post(
+                ML_API, json={"features": features}, timeout=2.0
+            )
+            result = response.json()
+            if result.get("is_ransomware"):
+                self._trigger_alert(
+                    filepath,
+                    f"ML_DETECTION_{result['confidence']}",
+                    result["ransomware_probability"],
+                )
+        except requests.RequestException:
             if entropy > 7.5:
                 self._trigger_alert(filepath, "HEURISTIC_FALLBACK", 0.9)
 
@@ -79,32 +105,25 @@ class RansomwareHandler(FileSystemEventHandler):
         if self.alert_sent:
             return
         self.alert_sent = True
-        print(f"\n{'='*60}")
-        print(f"🚨 RANSOMWARE DETECTED")
+        print(f"\n{'=' * 60}")
+        print("🚨 RANSOMWARE DETECTED")
         print(f"  File: {filepath}")
         print(f"  Reason: {reason}")
         print(f"  Confidence: {confidence:.2%}")
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
         isolate_file(filepath)
 
-def shannon_entropy(data):
-    if not data:
-        return 0
-    entropy = 0
-    for x in range(256):
-        p_x = float(data.count(bytes([x]))) / len(data)
-        if p_x > 0:
-            entropy += - p_x * math.log(p_x, 2)
-    return entropy
 
-def start_monitoring():
+def start_monitoring(log_label: int | None = None, run_id: str = ""):
     create_honeypots()
     os.makedirs(WATCH_DIR, exist_ok=True)
-    event_handler = RansomwareHandler()
+    event_handler = RansomwareHandler(log_label=log_label, run_id=run_id)
     observer = Observer()
     observer.schedule(event_handler, WATCH_DIR, recursive=True)
     observer.schedule(event_handler, HONEYPOT_DIR, recursive=True)
     print(f"[AGENT] Monitoring: {WATCH_DIR} and {HONEYPOT_DIR}")
+    if log_label is not None:
+        print(f"[AGENT] Logging features with label={log_label} (run_id={run_id or 'manual'})")
     observer.start()
     try:
         while True:
@@ -113,5 +132,24 @@ def start_monitoring():
         observer.stop()
     observer.join()
 
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="RakshakAI file-system behavior monitor")
+    parser.add_argument(
+        "--log-label",
+        type=int,
+        choices=[0, 1],
+        default=None,
+        help="If set, append feature vectors to ml/behavior_logs.csv with this label.",
+    )
+    parser.add_argument(
+        "--run-id",
+        default="",
+        help="Optional run identifier stored in behavior_logs.csv.",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    start_monitoring()
+    args = parse_args()
+    start_monitoring(log_label=args.log_label, run_id=args.run_id)
