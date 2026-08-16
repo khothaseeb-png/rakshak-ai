@@ -13,14 +13,18 @@ app = Flask(__name__)
 CORS(app)
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "ransomware_model.pkl")
-artifact = joblib.load(MODEL_PATH)
 
-if isinstance(artifact, dict):
-    model = artifact["model"]
-    expected_features = artifact.get("num_features", NUM_FEATURES)
-else:
-    model = artifact
-    expected_features = NUM_FEATURES
+
+def load_model_artifact():
+    if not os.path.exists(MODEL_PATH):
+        return None, NUM_FEATURES
+    artifact = joblib.load(MODEL_PATH)
+    if isinstance(artifact, dict):
+        return artifact["model"], artifact.get("num_features", NUM_FEATURES)
+    return artifact, NUM_FEATURES
+
+
+model, expected_features = load_model_artifact()
 
 
 @app.route("/predict", methods=["POST"])

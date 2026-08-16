@@ -1,6 +1,5 @@
 import os
 import sys
-
 import joblib
 import numpy as np
 import pandas as pd
@@ -32,7 +31,9 @@ def load_behavior_data(path: str = LOG_PATH) -> pd.DataFrame | None:
 
     missing_columns = [name for name in FEATURE_NAMES if name not in dataframe.columns]
     if missing_columns:
-        raise ValueError(f"Behavior log missing feature columns: {missing_columns}")
+        print(f"[WARN] Behavior log schema mismatch (missing {missing_columns}). Regenerating dataset...")
+        os.remove(path)
+        return None
 
     return dataframe
 

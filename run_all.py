@@ -1,5 +1,5 @@
 """
-RAKSHAK-AI — One-Command Launcher
+RAKSHAK — One-Command Launcher
 Usage: python run_all.py
 """
 
@@ -15,7 +15,7 @@ SIMULATOR = "simulator/fake_ransomware.py"
 MODEL = "ml/ransomware_model.pkl"
 
 # Find venv root from current Python path
-# e.g. .../rakshak-ai/venv/Scripts/python.exe -> .../rakshak-ai/venv
+# e.g. .../rakshak/venv/Scripts/python.exe -> .../rakshak/venv
 VENV = os.path.dirname(os.path.dirname(sys.executable))
 ACTIVATE = os.path.join(VENV, "Scripts", "activate.bat")
 
@@ -37,7 +37,7 @@ def check_model():
 
 def main():
     print("=" * 50)
-    print("RAKSHAK-AI Launcher")
+    print("RAKSHAK Launcher")
     print("=" * 50 + "\n")
     check_model()
 

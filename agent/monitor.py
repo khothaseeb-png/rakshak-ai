@@ -1,8 +1,12 @@
 import argparse
+import datetime
+import json
 import os
 import sys
 import time
 
+import joblib
+import numpy as np
 import requests
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -15,21 +19,55 @@ from ml.behavior_features import (
     read_file_entropy,
 )
 from behavior_logger import log_features
-from containment import isolate_file
-from honeypot import HONEYPOT_DIR, create_honeypots, get_honeypot_entropy, is_honeypot
+from containment import isolate_file, kill_process_by_path
+from honeypot import HONEYPOT_DIR, create_honeypots, is_honeypot
 
 WATCH_DIR = "./watch_target"
 ML_API = "http://localhost:5000/predict"
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "ml", "ransomware_model.pkl")
+THREAT_LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "live_threats.json")
 ENTROPY_THRESHOLD = 6.5
 FILE_CHANGE_THRESHOLD = 5
+
+
+def save_threat_log(alert_data: dict) -> None:
+    """Save threat alerts to a shared JSON file for real-time Streamlit dashboard rendering."""
+    try:
+        os.makedirs(os.path.dirname(THREAT_LOG_PATH), exist_ok=True)
+        threats = []
+        if os.path.exists(THREAT_LOG_PATH):
+            try:
+                with open(THREAT_LOG_PATH, "r", encoding="utf-8") as f:
+                    threats = json.load(f)
+            except Exception:
+                threats = []
+        threats.insert(0, alert_data)
+        threats = threats[:50]
+        with open(THREAT_LOG_PATH, "w", encoding="utf-8") as f:
+            json.dump(threats, f, indent=2)
+    except Exception as err:
+        print(f"[ERROR] Could not log live threat: {err}")
 
 
 class RansomwareHandler(FileSystemEventHandler):
     def __init__(self, log_label: int | None = None, run_id: str = ""):
         self.state = BehaviorState()
-        self.alert_sent = False
+        self.alerted_files = set()
         self.log_label = log_label
         self.run_id = run_id
+        self.local_model = self._load_local_model()
+
+    def _load_local_model(self):
+        try:
+            if os.path.exists(MODEL_PATH):
+                artifact = joblib.load(MODEL_PATH)
+                if isinstance(artifact, dict):
+                    print("[AGENT] Loaded Random Forest model locally for sub-ms scoring.")
+                    return artifact["model"]
+                return artifact
+        except Exception as e:
+            print(f"[WARN] Local model load failed ({e}); fallback to API.")
+        return None
 
     def on_modified(self, event):
         if event.is_directory:
@@ -72,46 +110,81 @@ class RansomwareHandler(FileSystemEventHandler):
 
         if honeypot:
             print(f"[ALERT] HONEYPOT TOUCHED: {filepath} | Entropy: {entropy:.2f}")
-            if entropy > ENTROPY_THRESHOLD:
-                self._trigger_alert(filepath, "HONEYPOT_ENCRYPTION", 1.0)
-                return
 
-        recent_event_count = len(self.state.snapshot(now))
-        if recent_event_count > FILE_CHANGE_THRESHOLD:
-            self._trigger_alert(filepath, "MASS_FILE_MODIFICATION", 0.85)
+        # Always run ML model evaluation on suspicious file events
+        self._evaluate_threat(filepath, features, entropy, honeypot, now)
+
+    def _evaluate_threat(self, filepath, features, entropy, honeypot, now):
+        probability = 0.0
+        confidence = "low"
+        is_ransomware = False
+        reason = "BEHAVIORAL_ML_DETECTION"
+
+        # Step 1: In-process sub-millisecond local ML scoring
+        if self.local_model is not None:
+            try:
+                feature_array = np.array(features, dtype=float).reshape(1, -1)
+                probability = float(self.local_model.predict_proba(feature_array)[0][1])
+                is_ransomware = probability > 0.7
+                confidence = "high" if probability > 0.9 else "medium" if probability > 0.7 else "low"
+            except Exception as err:
+                print(f"[WARN] Local ML evaluation error: {err}")
+
+        # Step 2: Fallback to Flask REST API if local model unvailable
+        if not is_ransomware and self.local_model is None:
+            try:
+                response = requests.post(ML_API, json={"features": features}, timeout=1.0)
+                res = response.json()
+                probability = res.get("ransomware_probability", 0.0)
+                is_ransomware = res.get("is_ransomware", False)
+                confidence = res.get("confidence", "medium")
+            except requests.RequestException:
+                pass
+
+        # Step 3: Heuristic boosting for honeypot touch / high entropy
+        if honeypot and entropy > ENTROPY_THRESHOLD:
+            probability = max(probability, 0.98)
+            is_ransomware = True
+            reason = "HONEYPOT_ENCRYPTION_SPIKE"
+        elif entropy > 7.5:
+            probability = max(probability, 0.88)
+            is_ransomware = True
+            reason = "HIGH_ENTROPY_BURST"
+
+        if is_ransomware:
+            self._trigger_alert(filepath, reason, probability, confidence, entropy)
+
+    def _trigger_alert(self, filepath, reason, probability, confidence, entropy):
+        if filepath in self.alerted_files:
             return
+        self.alerted_files.add(filepath)
 
-        if entropy > ENTROPY_THRESHOLD:
-            print(f"[SUSPICIOUS] High entropy ({entropy:.2f}): {filepath}")
-            self._check_with_ml(filepath, features, entropy)
-
-    def _check_with_ml(self, filepath, features, entropy):
-        try:
-            response = requests.post(
-                ML_API, json={"features": features}, timeout=2.0
-            )
-            result = response.json()
-            if result.get("is_ransomware"):
-                self._trigger_alert(
-                    filepath,
-                    f"ML_DETECTION_{result['confidence']}",
-                    result["ransomware_probability"],
-                )
-        except requests.RequestException:
-            if entropy > 7.5:
-                self._trigger_alert(filepath, "HEURISTIC_FALLBACK", 0.9)
-
-    def _trigger_alert(self, filepath, reason, confidence):
-        if self.alert_sent:
-            return
-        self.alert_sent = True
         print(f"\n{'=' * 60}")
-        print("🚨 RANSOMWARE DETECTED")
+        print("🚨 RANSOMWARE DETECTED BY RAKSHAK")
         print(f"  File: {filepath}")
         print(f"  Reason: {reason}")
-        print(f"  Confidence: {confidence:.2%}")
+        print(f"  Probability: {probability:.2%}")
+        print(f"  Confidence: {confidence}")
         print(f"{'=' * 60}\n")
-        isolate_file(filepath)
+
+        # Process-level termination & file quarantine
+        proc_killed = kill_process_by_path(filepath)
+        quarantine_dest = isolate_file(filepath)
+
+        # Log to shared JSON file for real-time dashboard UI
+        save_threat_log(
+            {
+                "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+                "file": os.path.basename(filepath),
+                "filepath": filepath,
+                "process": proc_killed or "suspicious_process.exe",
+                "reason": reason,
+                "confidence": probability,
+                "entropy": round(entropy, 2),
+                "action": "PROCESS_KILLED & QUARANTINED" if proc_killed else "FILE_QUARANTINED",
+                "quarantine_dest": quarantine_dest or "",
+            }
+        )
 
 
 def start_monitoring(log_label: int | None = None, run_id: str = ""):
@@ -121,7 +194,7 @@ def start_monitoring(log_label: int | None = None, run_id: str = ""):
     observer = Observer()
     observer.schedule(event_handler, WATCH_DIR, recursive=True)
     observer.schedule(event_handler, HONEYPOT_DIR, recursive=True)
-    print(f"[AGENT] Monitoring: {WATCH_DIR} and {HONEYPOT_DIR}")
+    print(f"[AGENT] Rakshak Monitoring: {WATCH_DIR} and {HONEYPOT_DIR}")
     if log_label is not None:
         print(f"[AGENT] Logging features with label={log_label} (run_id={run_id or 'manual'})")
     observer.start()
@@ -134,7 +207,7 @@ def start_monitoring(log_label: int | None = None, run_id: str = ""):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="RakshakAI file-system behavior monitor")
+    parser = argparse.ArgumentParser(description="Rakshak file-system behavior monitor")
     parser.add_argument(
         "--log-label",
         type=int,

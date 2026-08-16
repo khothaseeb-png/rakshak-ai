@@ -37,8 +37,14 @@ def _append_row(
     run_id: str,
     timestamp: float,
 ) -> None:
-    # Add Gaussian noise to simulate real-world measurement error
-    noisy_features = [max(0.0, min(1.0, f + random.gauss(0, 0.25))) for f in features]
+    # Add subtle, realistic measurement noise to continuous features, keeping binary flags exact
+    noisy_features = []
+    for idx, f in enumerate(features):
+        name = FEATURE_NAMES[idx]
+        if name in ("honeypot_flag",):
+            noisy_features.append(f)
+        else:
+            noisy_features.append(max(0.0, min(1.0, f + random.gauss(0, 0.02))))
     rows.append(
         {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp)),

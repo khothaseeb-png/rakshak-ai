@@ -1,6 +1,6 @@
 # Behavioral Feature Schema
 
-RAKSHAK-AI uses a single 10-dimensional feature vector for ransomware behavior scoring.
+Rakshak uses a 12-dimensional feature vector for ransomware behavior scoring.
 The same vector is produced at **training time**, **inference time**, and **live monitoring**.
 
 Source of truth: `ml/behavior_features.py`
@@ -17,8 +17,10 @@ Source of truth: `ml/behavior_features.py`
 | 6 | `create_ratio` | 0.0–1.0 | Creates / total events in the rolling window |
 | 7 | `modified_ratio` | 0.0–1.0 | Modifies / total events in the rolling window |
 | 8 | `high_entropy_ratio` | 0.0–1.0 | Share of window events with entropy > 6.5 |
-| 9 | `bytes_per_second` | 0.0–1.0 | Bytes observed in the window per second, normalized by 50 KB/s |
+| 9 | `bytes_per_second` | 0.0–1.0 | Bytes observed in window / window duration, normalized by 10 MB/s |
 | 10 | `burst_duration` | 0.0–1.0 | Seconds since the first event in the window, divided by 10 |
+| 11 | `entropy_delta` | 0.0–1.0 | Current entropy minus past average entropy in window |
+| 12 | `delete_ratio` | 0.0–1.0 | Deletions / total events in the rolling window |
 
 ## Rolling window
 
@@ -60,8 +62,8 @@ Training splits by `run_id` when available so events from the same attack run do
 
 ```json
 {
-  "features": [0.91, 0.80, 0.40, 0.0, 0.75, 0.10, 0.15, 0.88, 0.62, 0.90]
+  "features": [0.91, 0.80, 0.40, 0.0, 0.75, 0.10, 0.15, 0.88, 0.62, 0.90, 0.85, 0.0]
 }
 ```
 
-The API rejects requests that do not send exactly 10 features.
+The API rejects requests that do not send exactly 12 features.

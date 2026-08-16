@@ -23,8 +23,10 @@ FEATURE_NAMES = [
     "create_ratio",            # Creates / total events in window
     "modified_ratio",          # Modifies / total events in window
     "high_entropy_ratio",      # Share of window events with entropy > 6.5
-    "bytes_per_second",        # Bytes observed in window / window duration, normalized
+    "bytes_per_second",        # Bytes observed in window / window duration, normalized by 10 MB/s
     "burst_duration",          # Seconds since first event in window / 10, capped at 1.0
+    "entropy_delta",           # Current entropy minus past average entropy in window, normalized
+    "delete_ratio",            # Deletions / total events in window
 ]
 
 NUM_FEATURES = len(FEATURE_NAMES)
@@ -124,9 +126,18 @@ def compute_features(
     rename_count = sum(1 for event in events if event.event_type == "renamed")
     create_count = sum(1 for event in events if event.event_type == "created")
     modified_count = sum(1 for event in events if event.event_type == "modified")
+    delete_count = sum(1 for event in events if event.event_type in ("deleted", "removed"))
     high_entropy_count = sum(
         1 for event in events if event.entropy > HIGH_ENTROPY_THRESHOLD
     )
+
+    if total_events > 1:
+        past_events = events[:-1]
+        avg_past_entropy = sum(e.entropy for e in past_events) / len(past_events)
+        entropy_delta_raw = current_entropy - avg_past_entropy
+        entropy_delta = _cap((entropy_delta_raw + ENTROPY_MAX) / (2.0 * ENTROPY_MAX))
+    else:
+        entropy_delta = 0.5
 
     extensions = {
         os.path.splitext(event.filepath)[1].lower()
@@ -146,8 +157,10 @@ def compute_features(
         create_count / total_events,
         modified_count / total_events,
         high_entropy_count / total_events,
-        _cap((total_bytes / elapsed) / 50000.0),
+        _cap((total_bytes / elapsed) / 10000000.0),
         _cap(elapsed / state.window_seconds),
+        entropy_delta,
+        delete_count / total_events,
     ]
 
 
