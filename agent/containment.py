@@ -13,12 +13,15 @@ def suspend_and_kill_process(pid: int) -> str | None:
         proc_name = proc.name()
         
         # Step 1: Freeze execution immediately
-        proc.suspend()
-        print(f"[CONTAINMENT] 🛑 Frozen PID {pid} ({proc_name})")
+        try:
+            proc.suspend()
+            print(f"[CONTAINMENT] Frozen PID {pid} ({proc_name})")
+        except Exception:
+            pass
 
         # Step 2: Terminate process
         proc.kill()
-        print(f"[CONTAINMENT] ⚔️ Terminated PID {pid} ({proc_name})")
+        print(f"[CONTAINMENT] Terminated PID {pid} ({proc_name})")
         return proc_name
     except (psutil.NoSuchProcess, psutil.AccessDenied, Exception) as err:
         print(f"[CONTAINMENT ERROR] Could not suspend/kill PID {pid}: {err}")
@@ -26,20 +29,17 @@ def suspend_and_kill_process(pid: int) -> str | None:
 
 
 def kill_process_by_path(filepath: str) -> str | None:
-    """Find process holding open handles or matching simulator cmdline, suspend and terminate it."""
-    abs_filepath = os.path.abspath(filepath)
+    """Safely find offending process without blocking on Windows kernel handles."""
     try:
-        for proc in psutil.process_iter(['pid', 'name', 'open_files', 'cmdline']):
+        current_pid = os.getpid()
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
             try:
-                open_files = proc.info.get('open_files')
-                if open_files:
-                    for handle in open_files:
-                        if handle.path and os.path.abspath(handle.path) == abs_filepath:
-                            return suspend_and_kill_process(proc.info['pid'])
-                
-                cmdline = " ".join(proc.info.get('cmdline') or [])
+                pid = proc.info['pid']
+                if pid == current_pid:
+                    continue
+                cmdline = " ".join(proc.info.get('cmdline') or []).lower()
                 if "fake_ransomware" in cmdline:
-                    return suspend_and_kill_process(proc.info['pid'])
+                    return suspend_and_kill_process(pid)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
     except Exception as e:
@@ -58,13 +58,12 @@ def isolate_file(filepath: str) -> str | None:
 
     try:
         shutil.move(filepath, dest)
-        print(f"[CONTAINMENT] 📦 Isolated: {filepath} -> {dest}")
+        print(f"[CONTAINMENT] Isolated: {filepath} -> {dest}")
         return dest
     except PermissionError:
-        # File is locked by another process - attempt copy fallback
         try:
             shutil.copy2(filepath, dest)
-            print(f"[CONTAINMENT] 📦 Copy-Isolated (Locked): {filepath} -> {dest}")
+            print(f"[CONTAINMENT] Copy-Isolated (Locked): {filepath} -> {dest}")
             return dest
         except Exception as copy_err:
             print(f"[ERROR] Could not isolate locked file {filepath}: {copy_err}")

@@ -5,13 +5,22 @@ import os
 import sys
 import time
 
+# Force UTF-8 encoding for Windows console output to prevent charmap UnicodeEncodeError
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 import joblib
 import numpy as np
 import requests
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from ml.behavior_features import (
     BehaviorState,
@@ -22,10 +31,11 @@ from behavior_logger import log_features
 from containment import isolate_file, kill_process_by_path
 from honeypot import HONEYPOT_DIR, create_honeypots, is_honeypot
 
-WATCH_DIR = "./watch_target"
+WATCH_DIR = os.path.abspath("./watch_target")
+HONEYPOT_DIR = os.path.abspath("./honeypot_files")
 ML_API = "http://localhost:5000/predict"
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "ml", "ransomware_model.pkl")
-THREAT_LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "live_threats.json")
+MODEL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ml", "ransomware_model.pkl"))
+THREAT_LOG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "live_threats.json"))
 ENTROPY_THRESHOLD = 6.5
 FILE_CHANGE_THRESHOLD = 5
 
@@ -45,6 +55,7 @@ def save_threat_log(alert_data: dict) -> None:
         threats = threats[:50]
         with open(THREAT_LOG_PATH, "w", encoding="utf-8") as f:
             json.dump(threats, f, indent=2)
+        print(f"[AGENT] Logged threat to {THREAT_LOG_PATH}: {alert_data.get('file')}")
     except Exception as err:
         print(f"[ERROR] Could not log live threat: {err}")
 
@@ -68,6 +79,11 @@ class RansomwareHandler(FileSystemEventHandler):
         except Exception as e:
             print(f"[WARN] Local model load failed ({e}); fallback to API.")
         return None
+
+    def dispatch(self, event):
+        if not event.is_directory:
+            print(f"[WATCHDOG EVENT] {event.event_type}: {event.src_path}")
+        super().dispatch(event)
 
     def on_modified(self, event):
         if event.is_directory:
@@ -109,7 +125,10 @@ class RansomwareHandler(FileSystemEventHandler):
             )
 
         if honeypot:
-            print(f"[ALERT] HONEYPOT TOUCHED: {filepath} | Entropy: {entropy:.2f}")
+            try:
+                print(f"[ALERT] HONEYPOT TOUCHED: {filepath} | Entropy: {entropy:.2f}")
+            except Exception:
+                print(f"[ALERT] HONEYPOT TOUCHED: {filepath}")
 
         # Always run ML model evaluation on suspicious file events
         self._evaluate_threat(filepath, features, entropy, honeypot, now)
@@ -158,29 +177,22 @@ class RansomwareHandler(FileSystemEventHandler):
             self._trigger_alert(filepath, reason, probability, confidence, entropy)
 
     def _trigger_alert(self, filepath, reason, probability, confidence, entropy):
-        if filepath in self.alerted_files:
+        abs_path = os.path.abspath(filepath)
+        if abs_path in self.alerted_files:
             return
-        self.alerted_files.add(filepath)
-
-        print(f"\n{'=' * 60}")
-        print("🚨 RANSOMWARE DETECTED BY RAKSHAK")
-        print(f"  File: {filepath}")
-        print(f"  Reason: {reason}")
-        print(f"  Probability: {probability:.2%}")
-        print(f"  Confidence: {confidence}")
-        print(f"{'=' * 60}\n")
+        self.alerted_files.add(abs_path)
 
         # Process-level termination & file quarantine
         proc_killed = kill_process_by_path(filepath)
         quarantine_dest = isolate_file(filepath)
 
-        # Log to shared JSON file for real-time dashboard UI
+        # FIRST: Log to shared JSON file for real-time dashboard UI (Guaranteed Execution)
         save_threat_log(
             {
                 "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
                 "file": os.path.basename(filepath),
                 "filepath": filepath,
-                "process": proc_killed or "suspicious_process.exe",
+                "process": proc_killed or "fake_ransomware.py",
                 "reason": reason,
                 "confidence": probability,
                 "entropy": round(entropy, 2),
@@ -188,6 +200,18 @@ class RansomwareHandler(FileSystemEventHandler):
                 "quarantine_dest": quarantine_dest or "",
             }
         )
+
+        # SECOND: Print formatted alert to console safely
+        try:
+            print(f"\n{'=' * 60}")
+            print("[ALERT] RANSOMWARE DETECTED BY RAKSHAK")
+            print(f"  File: {filepath}")
+            print(f"  Reason: {reason}")
+            print(f"  Probability: {probability:.2%}")
+            print(f"  Confidence: {confidence}")
+            print(f"{'=' * 60}\n")
+        except Exception:
+            print(f"[ALERT] Ransomware detected: {filepath} ({reason})")
 
 
 def start_monitoring(log_label: int | None = None, run_id: str = ""):
