@@ -125,8 +125,8 @@ class RansomwareHandler(FileSystemEventHandler):
             try:
                 feature_array = np.array(features, dtype=float).reshape(1, -1)
                 probability = float(self.local_model.predict_proba(feature_array)[0][1])
-                is_ransomware = probability > 0.5
-                confidence = "high" if probability > 0.8 else "medium" if probability > 0.5 else "low"
+                is_ransomware = probability > 0.4
+                confidence = "high" if probability > 0.8 else "medium" if probability > 0.4 else "low"
             except Exception as err:
                 print(f"[WARN] Local ML evaluation error: {err}")
 
@@ -141,16 +141,18 @@ class RansomwareHandler(FileSystemEventHandler):
             except requests.RequestException:
                 pass
 
-        # Step 3: Behavioral pattern & entropy detection triggers
+        # Step 3: Behavioral pattern & honeypot triggers
         is_encrypted_ext = filepath.endswith(".encrypted") or ".encrypted" in filepath
-        if honeypot and (entropy > 6.0 or is_encrypted_ext):
-            probability = max(probability, 0.98)
+        if honeypot:
+            probability = max(probability, 0.99)
             is_ransomware = True
-            reason = "HONEYPOT_ENCRYPTION_SPIKE"
-        elif entropy > 6.0 or is_encrypted_ext:
-            probability = max(probability, 0.92)
+            reason = "HONEYPOT_DECOY_TOUCHED"
+            confidence = "high"
+        elif entropy > 5.5 or is_encrypted_ext:
+            probability = max(probability, 0.95)
             is_ransomware = True
             reason = "HIGH_ENTROPY_ENCRYPTION_BURST"
+            confidence = "high"
 
         if is_ransomware:
             self._trigger_alert(filepath, reason, probability, confidence, entropy)

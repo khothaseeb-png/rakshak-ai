@@ -14,7 +14,9 @@ def create_honeypots():
     print(f"[HONEYPOT] Created {len(HONEYPOT_FILES)} decoy files in {HONEYPOT_DIR}")
 
 def is_honeypot(filepath):
-    return HONEYPOT_DIR in os.path.abspath(filepath)
+    abs_hp = os.path.abspath(HONEYPOT_DIR).lower()
+    abs_file = os.path.abspath(filepath).lower()
+    return abs_hp in abs_file or "salary_2026" in abs_file
 
 def get_honeypot_entropy(filepath):
     with open(filepath, 'rb') as f:
