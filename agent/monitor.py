@@ -125,12 +125,12 @@ class RansomwareHandler(FileSystemEventHandler):
             try:
                 feature_array = np.array(features, dtype=float).reshape(1, -1)
                 probability = float(self.local_model.predict_proba(feature_array)[0][1])
-                is_ransomware = probability > 0.7
-                confidence = "high" if probability > 0.9 else "medium" if probability > 0.7 else "low"
+                is_ransomware = probability > 0.5
+                confidence = "high" if probability > 0.8 else "medium" if probability > 0.5 else "low"
             except Exception as err:
                 print(f"[WARN] Local ML evaluation error: {err}")
 
-        # Step 2: Fallback to Flask REST API if local model unvailable
+        # Step 2: Fallback to Flask REST API if local model unavailable
         if not is_ransomware and self.local_model is None:
             try:
                 response = requests.post(ML_API, json={"features": features}, timeout=1.0)
@@ -141,15 +141,16 @@ class RansomwareHandler(FileSystemEventHandler):
             except requests.RequestException:
                 pass
 
-        # Step 3: Heuristic boosting for honeypot touch / high entropy
-        if honeypot and entropy > ENTROPY_THRESHOLD:
+        # Step 3: Behavioral pattern & entropy detection triggers
+        is_encrypted_ext = filepath.endswith(".encrypted") or ".encrypted" in filepath
+        if honeypot and (entropy > 6.0 or is_encrypted_ext):
             probability = max(probability, 0.98)
             is_ransomware = True
             reason = "HONEYPOT_ENCRYPTION_SPIKE"
-        elif entropy > 7.5:
-            probability = max(probability, 0.88)
+        elif entropy > 6.0 or is_encrypted_ext:
+            probability = max(probability, 0.92)
             is_ransomware = True
-            reason = "HIGH_ENTROPY_BURST"
+            reason = "HIGH_ENTROPY_ENCRYPTION_BURST"
 
         if is_ransomware:
             self._trigger_alert(filepath, reason, probability, confidence, entropy)

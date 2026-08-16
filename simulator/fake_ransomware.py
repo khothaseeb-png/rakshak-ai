@@ -6,27 +6,45 @@ key = Fernet.generate_key()
 cipher = Fernet(key)
 TARGET_DIR = "./watch_target"
 
+
 def encrypt_file(filepath):
-    with open(filepath, 'rb') as f:
+    with open(filepath, "rb") as f:
         data = f.read()
     encrypted = cipher.encrypt(data)
-    with open(filepath, 'wb') as f:
+    with open(filepath, "wb") as f:
         f.write(encrypted)
     new_path = filepath + ".encrypted"
+    if os.path.exists(new_path):
+        try:
+            os.remove(new_path)
+        except Exception:
+            pass
     os.rename(filepath, new_path)
     return new_path
+
 
 def simulate_attack():
     print("[SIMULATOR] Starting fake ransomware attack...")
     time.sleep(2)
     os.makedirs(TARGET_DIR, exist_ok=True)
+
+    # Clean up existing files from previous simulation runs
+    for fname in os.listdir(TARGET_DIR):
+        try:
+            os.remove(os.path.join(TARGET_DIR, fname))
+        except Exception:
+            pass
+
+    # Create fresh documents to simulate user files
     for i in range(10):
-        with open(f"{TARGET_DIR}/doc_{i}.txt", 'w') as f:
+        with open(f"{TARGET_DIR}/doc_{i}.txt", "w", encoding="utf-8") as f:
             f.write("Important business document content.\n" * 50)
+
     honeypot = "./honeypot_files/salary_2026.xlsx"
     files = [f"{TARGET_DIR}/doc_{i}.txt" for i in range(10)]
     if os.path.exists(honeypot):
         files.append(honeypot)
+
     for fpath in files:
         try:
             new_path = encrypt_file(fpath)
@@ -34,7 +52,9 @@ def simulate_attack():
             time.sleep(0.5)
         except Exception as e:
             print(f"[SIMULATOR] Error: {e}")
+
     print("[SIMULATOR] Attack complete.")
+
 
 if __name__ == "__main__":
     simulate_attack()
