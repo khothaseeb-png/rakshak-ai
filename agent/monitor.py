@@ -193,6 +193,14 @@ class RansomwareHandler(FileSystemEventHandler):
 def start_monitoring(log_label: int | None = None, run_id: str = ""):
     create_honeypots()
     os.makedirs(WATCH_DIR, exist_ok=True)
+    # Clear stale historical threat logs from previous sessions
+    try:
+        os.makedirs(os.path.dirname(THREAT_LOG_PATH), exist_ok=True)
+        with open(THREAT_LOG_PATH, "w", encoding="utf-8") as f:
+            json.dump([], f)
+    except Exception:
+        pass
+
     event_handler = RansomwareHandler(log_label=log_label, run_id=run_id)
     observer = Observer()
     observer.schedule(event_handler, WATCH_DIR, recursive=True)

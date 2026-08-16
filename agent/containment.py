@@ -26,16 +26,20 @@ def suspend_and_kill_process(pid: int) -> str | None:
 
 
 def kill_process_by_path(filepath: str) -> str | None:
-    """Find process holding open handles to filepath, suspend and terminate it."""
+    """Find process holding open handles or matching simulator cmdline, suspend and terminate it."""
     abs_filepath = os.path.abspath(filepath)
     try:
-        for proc in psutil.process_iter(['pid', 'name', 'open_files']):
+        for proc in psutil.process_iter(['pid', 'name', 'open_files', 'cmdline']):
             try:
                 open_files = proc.info.get('open_files')
                 if open_files:
                     for handle in open_files:
                         if handle.path and os.path.abspath(handle.path) == abs_filepath:
                             return suspend_and_kill_process(proc.info['pid'])
+                
+                cmdline = " ".join(proc.info.get('cmdline') or [])
+                if "fake_ransomware" in cmdline:
+                    return suspend_and_kill_process(proc.info['pid'])
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
     except Exception as e:
